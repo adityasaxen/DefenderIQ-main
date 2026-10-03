@@ -1,0 +1,8 @@
+# Settings to manage and configure a Firebase App Hosting backend.
+# https://firebase.google.com/docs/app-hosting/configure
+
+# The runConfig specifies the resources to provision for the App Hosting backend.
+runConfig:
+  # The maximum number of container instances that can be running for your backend.
+  # If you want to handle more traffic, you can increase this value.
+  maxInstances: 1

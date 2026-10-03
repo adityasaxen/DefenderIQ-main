@@ -1,0 +1,112 @@
+/**
+ * @fileoverview Firestore Security Rules for SentinelView.
+ *
+ * Core Philosophy:
+ * This ruleset enforces a strict user-ownership model.  Each user can only
+ * access their own data, and no global admin roles are defined.
+ *
+ * Data Structure:
+ * All data is nested under `/users/{userId}`, including user profiles,
+ * log entries, alerts, and reports. This structure ensures that all
+ * data is explicitly associated with a specific user.
+ *
+ * Key Security Decisions:
+ * - Users can only create their own user document and can't modify `id` after creation.
+ * - Users can only access their own log entries, alerts, and reports.
+ * - Listing other users is allowed for the chat feature, but their subcollections are protected.
+ *
+ * Denormalization for Authorization:
+ * The `userId` field is denormalized into the `LogEntry`, `Alert`, and
+ * `Report` documents to enable efficient authorization checks without
+ * requiring additional reads.
+ */
+rules_version = '2';
+service cloud.firestore {
+  match /databases/{database}/documents {
+
+    function isSignedIn() {
+      return request.auth != null;
+    }
+
+    function isOwner(userId) {
+      return request.auth.uid == userId;
+    }
+    
+    function isExistingOwner(userId) {
+      return isOwner(userId) && resource != null;
+    }
+
+    /**
+     * @description Secures the `/users/{userId}` collection, allowing users to manage their own profiles.
+     * @path /users/{userId}
+     */
+    match /users/{userId} {
+      allow get: if isSignedIn();
+      allow list: if isSignedIn(); // Allow listing users for chat functionality
+      allow create: if isSignedIn() && isOwner(userId) && request.resource.data.id == userId;
+      allow update: if isExistingOwner(userId) && request.resource.data.id == resource.data.id;
+      allow delete: if isExistingOwner(userId);
+    }
+
+    /**
+     * @description Secures the `/users/{userId}/log_entries/{logEntryId}` collection.
+     * @path /users/{userId}/log_entries/{logEntryId}
+     */
+    match /users/{userId}/log_entries/{logEntryId} {
+      allow get, list, create, update, delete: if isOwner(userId);
+    }
+
+    /**
+     * @description Secures the `/users/{userId}/alerts/{alertId}` collection.
+     * @path /users/{userId}/alerts/{alertId}
+     */
+    match /users/{userId}/alerts/{alertId} {
+      allow get, list, create, update, delete: if isOwner(userId);
+    }
+
+    /**
+     * @description Secures the `/users/{userId}/reports/{reportId}` collection.
+     * @path /users/{userId}/reports/{reportId}
+     */
+    match /users/{userId}/reports/{reportId} {
+      allow get, list, create, update, delete: if isOwner(userId);
+    }
+
+    /**
+     * @description Secures the `/conversations/{conversationId}` collection.
+     * @path /conversations/{conversationId}
+     */
+    match /conversations/{conversationId} {
+       function isParticipant() {
+         return isSignedIn() && request.auth.uid in resource.data.participants;
+       }
+
+       // Allow get/update if the user is a participant in the specific conversation document
+       allow get, update: if isParticipant();
+       
+       // Allow list ONLY IF the query explicitly filters for conversations where the current user is a participant.
+       // This is the correct way to secure collection-level queries.
+       allow list: if isSignedIn() && request.query.where.participants.hasAny([request.auth.uid]);
+
+       // Allow create if the user is including themselves in the participants list.
+       allow create: if isSignedIn() && request.auth.uid in request.resource.data.participants;
+    }
+
+     /**
+     * @description Secures the messages subcollection within a conversation.
+     * @path /conversations/{conversationId}/messages/{messageId}
+     */
+    match /conversations/{conversationId}/messages/{messageId} {
+        function isParticipant() {
+            // Check the parent conversation document to see if the user is a participant.
+            return isSignedIn() && request.auth.uid in get(/databases/$(database)/documents/conversations/$(conversationId)).data.participants;
+        }
+        
+        // Allow participants to read all messages in the conversation.
+        allow get, list: if isParticipant();
+
+        // Allow a participant to create a message, but only if they are the sender.
+        allow create: if isParticipant() && request.resource.data.senderId == request.auth.uid;
+    }
+  }
+}
